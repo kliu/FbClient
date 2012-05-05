@@ -20,7 +20,7 @@ typedef void(^FacebookObjectHandler)(FacebookObject *object);
 typedef void(^FacebookConnectionHandler)(FacebookObject *updatedConnection, FacebookLoadType loadType, NSInteger numObjects);
 typedef void(^FacebookLikesHandler)(NSString *objectId, NSArray *likes);
 
-@interface FacebookClient
+@interface FacebookClient : NSObject
 
 // Facebook
 extern NSString * const SwiftFBUserIsAuthenticated;
