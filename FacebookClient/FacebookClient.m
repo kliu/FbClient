@@ -7,11 +7,14 @@
 //
 
 #import "FacebookClient.h"
-#import "JokinglyOperation.h"
+#import "AFNetworking.h"
 #import "JSONKit.h"
 #import "FMDatabase.h"
 
-#define kAHSwiftInitialCellLimit 10
+
+
+typedef void (^AFFailureHandler)(AFHTTPRequestOperation *operation, NSError *error);
+typedef id(^FacebookJSONParseHandler)(id obj);
 
 @interface NSString(FacebookClientAdditions) 
 
@@ -46,246 +49,110 @@
 @end
 
 @interface FacebookClient()
-+ (JokinglyHandler) checkForErrorHandler;
-+ (JokinglyHandler) errorHandler;
-+ (NSArray*) sortFriendsByName:(NSArray*) friends;
-+(NSString*) userIdForURL:(NSString *) url;
-+ (JokinglyJSONHandler) jsonHandler;
+
+@property (nonatomic, readonly, weak) AFFailureHandler defaultFailureHandler;
+@property (nonatomic, readonly, weak) FacebookJSONParseHandler jsonParseHandler;
+
+- (NSArray*) sortFriendsByName:(NSArray*) friends;
+- (NSString*) userIdForURL:(NSString *) url;
+-(void) getJSON:(NSString*)url handler:(FacebookJSONHandler) handler;
+-(void) queueBatchOperationForURLs:(NSArray*)urls handler:(FacebookJSONHandler) handler;
 
 @end
 
 @implementation FacebookClient
 
+@synthesize defaultParams, defaultFailureHandler, jsonParseHandler;
 
 //Facebook
 
-NSString * const FacebookClientUserIsAuthenticated = @"FacebookClientIsAuthenticatedWithFB";
-NSString * const FacebookClientErrorAuthenticating = @"SwiftErrorAuthenticatingWithFB";
-NSString * const FacebookClientRejectedAccessToken = @"FacebookClientRejectedAccessToken"; 
-NSString * const FacebookClientConnectionError = @"FacebookClientConnectionError";
-NSString * const FacebookClientAppID = @"192822854100507";
-NSString * const FacebookClientAuthorizeURL = @"https://graph.facebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&type=user_agent&display=popup";
-NSString * const FacebookClientAuthorizeWithScopeURL = @"https://graph.facebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&scope=%@&type=user_agent&display=popup";
-NSString * const FacebookClientLoginURL = @"https://www.facebook.com/login.php";
-NSString * const FacebookClientLoginSuccessURL = @"http://www.facebook.com/connect/login_success.html";
-NSString * const FacebookClientUIServerURL = @"http://www.facebook.com/connect/uiserver.php";
-NSString * const FacebookClientAccessToken = @"access_token=";
-NSString * const FacebookClientExpiresIn =  @"expires_in=";
-NSString * const FacebookClientErrorReason = @"error_description=";
-NSString * const FacebookClientGraphApiURLWithToken =@"https://graph.facebook.com?access_token=%@";
-NSString * const FacebookClientGraphApiGetURL =@"https://graph.facebook.com/%@";
-NSString * const FacebookClientRestApiGetURL =@"https://api.facebook.com/method/%@";
-NSString * const FacebookClientGraphApiPostURL = @"https://graph.facebook.com/%@";
-NSString * const FacebookClientStoreAccessToken =@"FacebookClientAStoreAccessToken";
-NSString * const FacebookClientCurrentUserID = @"FacebookClientCurrentUserID";
-NSString * const FacebookClientStoreTokenExpiry = @"FacebookClientStoreTokenExpiry";
-NSString * const FacebookClientStoreAccessPermissions = @"FacebookClientStoreAccessPermissions";
-NSString * const FacebookClientDateFormat = @"yyyy'-'MM'-'dd'T'HH':'mm':'ssZZZZ";
-NSString * const FacebookClientUserDismissedFBAuthenticationDialog = @"FacebookClientDismissedFBAuthenticationDialog";
-NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 
+#pragma mark - Singleton
 
-
-#pragma mark - Operation creators
-
-
-+(void) queueOperationForURL:(NSString*)url handler:(JokinglyHandler) handler{
-    JokinglyOperation *operation = [self operationForURL:url];
-    [operation addSuccessHandler:handler];
-    [[self operationQueue] addOperation:operation];
+- (FacebookClient *)sharedClient {
+    static FacebookClient *_sharedClient = nil;
+    static dispatch_once_t oncePredicate;
+    dispatch_once(&oncePredicate, ^{
+        _sharedClient = [[[self class] alloc] initWithBaseURL:[NSURL URLWithString:kFacebookClientGraphApiGetURL]];
+        [_sharedClient registerHTTPOperationClass:[AFJSONRequestOperation class]];
+    });
+    
+    return _sharedClient;
 }
 
-+(void) queueNoCacheOperationForURL:(NSString*)url handler:(JokinglyHandler) handler{
-    JokinglyOperation *operation = [self operationForURL:url];
-    operation.shouldCheckCache = NO;
-    operation.shouldStoreInCache = NO;
-    [operation addSuccessHandler:handler];
-    [[self operationQueue] addOperation:operation];
+
+-(NSDictionary*) defaultParams {
+    return [NSMutableDictionary dictionaryWithObjectsAndKeys:[self accessToken], @"access_token", @"U", @"date_format", nil];
+}
+
+-(void) getJSON:(NSString *)url handler:(FacebookJSONHandler)handler {
+    [self getPath:url parameters:self.defaultParams success:^(AFHTTPRequestOperation *operation, id responseObject) {
+        
+        if (self.jsonParseHandler) {
+           responseObject = self.jsonParseHandler(responseObject);
+        }
+        if (handler) {
+            handler(responseObject);
+        }
+    } failure:self.defaultFailureHandler];
 }
 
 // See: https://developers.facebook.com/docs/reference/api/batch/
-+(void) queueBatchOperationForURLs:(NSArray*)urls handler:(JokinglyHandler) handler{
+- (void) queueBatchOperationForURLs:(NSArray*)urls handler:(FacebookJSONHandler) handler{
     
     NSMutableArray *batchArray = [NSMutableArray arrayWithCapacity:[urls count]];
     for (NSString *url in urls) {
         [batchArray addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"GET", @"method", url, @"relative_url", nil]];
     }
-    NSString *body = [NSString stringWithFormat:@"batch=%@", [batchArray JSONString]];
     
-    JokinglyOperation *operation = [JokinglyOperation postOperationWithURL:[NSString stringWithFormat:FacebookClientGraphApiURLWithToken, [self accessToken]] andBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
-    operation.shouldCheckCache = NO;
-    operation.shouldStoreInCache = NO;
-    [operation addSuccessHandler:handler];
-    [[self operationQueue] addOperation:operation];
+    //These will be converted into json
+    NSDictionary *params = [NSDictionary dictionaryWithObject:batchArray forKey:@"batch"];
+    NSString *path =[NSString stringWithFormat:@"?access_token", [self accessToken]];
+    [self postPath:path parameters:params success:^(AFHTTPRequestOperation *operation, id responseObject) {
+        if (handler) {
+            handler(responseObject);
+        }
+    } failure:self.defaultFailureHandler];
 }
 
 
-
-+(void) queueOperationForURL:(NSString*)url notificationName:(NSString*) notificationName {
-    JokinglyOperation *operation = [self operationForURL:url];
-    operation.notificationName = notificationName;
-    [[self operationQueue] addOperation:operation];
-}
-
-+ (JokinglyOperation*) operationForURL:(NSString*) url {
-    JokinglyOperation *operation = [JokinglyOperation operationWithURL:[self urlForRequest:url andParams:nil]];
-    
-    
-    operation.cacheDirectoryPathJSON = [self jsonCachePath];
-    operation.cacheDirectoryPathPhotos = [self photosCachePath];
-    operation.jsonHandler = [self jsonHandler];
-    operation.checkForAppErrorHandler = [self checkForErrorHandler];
-    [operation addErrorHandler:[self errorHandler]];
-    operation.url = url;
-    return operation;
-}
-
-+ (JokinglyOperation *) photoOperationForURL:(NSString*) url {
-    if (!url) {
-        NSLog(@"!!Warning, attempting to load image that doesn't exist!!!!!");
-        return nil;
-    }
-    JokinglyOperation *operation = [JokinglyOperation operationWithURL:url];
-    operation.cacheDirectoryPathPhotos = [self photosCachePath];
-    operation.requestType = JokinglyPhotoRequest;
-    operation.url = url;
-    operation.shouldCheckCache = YES;
-    operation.shouldStoreInCache = YES;
-    operation.checkForAppErrorHandler = [self checkForErrorHandler];
-    [operation addErrorHandler:[self errorHandler]];
-    // TODO: this is good for all but profile pics which need to flushed from cache a few times per minute
-    operation.shouldDownloadIfInCache = NO;
-    return operation;
-}
-
-+(void) queueOperationForComment:(NSString*)comment onObjectID:(NSString*) objectID handler:(JokinglyHandler) handler {
-    NSString *commentURL = [NSString stringWithFormat:@"%@/comments", objectID];
-    NSString *body = [NSString stringWithFormat:@"message=%@", comment];
-    JokinglyOperation *operation = [JokinglyOperation postOperationWithURL:[self urlForRequest:commentURL andParams:nil] andBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
-    operation.checkForAppErrorHandler = [self checkForErrorHandler];
-    [operation addErrorHandler:[self errorHandler]];
-    [operation addSuccessHandler:handler];
-    [[self operationQueue] addOperation:operation];
+-(void) postComment:(NSString*)comment onObjectID:(NSString*) objectID handler:(FacebookJSONHandler) handler {
+    NSString *commentURL = [self pathWithToken:[NSString stringWithFormat:@"%@/comments"]];
+    NSDictionary *params = [NSDictionary dictionaryWithObject:comment forKey:@"message"];
+    [self postPath:commentURL parameters:params success:^(AFHTTPRequestOperation *operation, id responseObject) {
+        if (handler) {
+            handler(responseObject);
+        }
+    } failure:self.defaultFailureHandler];
 } 
 
-+(void) queueOperationForLikeOnObjectID:(NSString*) objectID isLiked:(BOOL) isLiked handler:(JokinglyHandler) handler
+-(void) postLikeOnObjectId:(NSString*) objectID isLiked:(BOOL) isLiked handler:(FacebookJSONHandler) handler
 {
     if (!objectID || [objectID containsString:@"null"]) {
         NSAssert(false, @"Cannot pass null objectID");
     }
     
-    NSString *url = [NSString stringWithFormat:@"%@/likes", objectID];
-    JokinglyOperation *operation;
-    if (isLiked) {
-        operation = [JokinglyOperation postOperationWithURL:[self urlForRequest:url andParams:nil] andBody:nil];    
-    } else {
-        operation = [JokinglyOperation deleteOperationWithURL:[self urlForRequest:url andParams:nil]]; 
-    }
-    [operation addSuccessHandler:handler];
-    operation.checkForAppErrorHandler = [self checkForErrorHandler];
-    [operation addErrorHandler:[self errorHandler]];
-    [[self operationQueue] addOperation:operation];
+    NSString *url = [self pathWithToken:[NSString stringWithFormat:@"%@/likes", objectID]];
+    [self postPath:url parameters:nil success:^(AFHTTPRequestOperation *operation, id responseObject) {
+        if (handler) {
+            handler(responseObject);
+        }
+    } failure:self.defaultFailureHandler];
 }
 
-+(NSString*)privacyObject:(NSDictionary*)privacy
-{
-    NSString *strJson=nil;
-    if( [privacy count] >0 )
-        strJson = [privacy JSONString];
-    
-    return strJson;
-}
-+(NSData*)bodyForPostStatus:(FacebookObject*)obj privacy:(NSDictionary*)privacy
-{
-    NSMutableDictionary *dict=[NSMutableDictionary dictionaryWithCapacity:5];
-    NSData *bodyData=nil;
-    obj.type = FacebookObjectTypeStatus;
-    
-    // Priority : Image --> Link --> Text status
-    if ( obj.imageBinary && ([obj.imageBinary isKindOfClass:[NSData class]] || [obj.imageBinary isKindOfClass:[NSString class]]) )
-    {
-        obj.type = FacebookObjectTypePhoto;
-        [dict setObject:obj.imageBinary forKey:@"image"];
-        if( obj.message )
-            [dict setObject:obj.message forKey:@"message"];
-        else if( obj.name )
-            [dict setObject:obj.name forKey:@"message"];
-        else if( obj.caption )
-            [dict setObject:obj.caption forKey:@"message"];
-    }
-    else if( obj.link!=nil)
-    {
-        obj.type = FacebookObjectTypeLink;
-        [dict setObject:obj.link forKey:@"link"];
-        if( obj.message )
-            [dict setObject:obj.message forKey:@"message"];
-        if( obj.name )
-            [dict setObject:obj.name forKey:@"name"];
-        if( obj.caption )
-            [dict setObject:obj.caption forKey:@"caption"];
-        /* // TODO; description conflicts with NSObject
-         if( obj.description )
-         [dict setObject:obj.description forKey:@"description"];
-         */
-    }
-    else if( 0 /* TODO: Video */ )
-    {
-        obj.type = FacebookObjectTypeVideo;
-        
-    }
-    else
-    {
-        obj.type = FacebookObjectTypeStatus;
-        [dict setObject:@"status" forKey:@"type"];
-        if( obj.message )
-            [dict setObject:obj.message forKey:@"message"];
-        if( obj.name )
-            [dict setObject:obj.name forKey:@"name"];
-    }
-    NSString *privacyObj = [self privacyObject:privacy];
-    if( privacyObj && [obj.toID length]==0 )    // don't apply privacy settings if we have a destination
-        [dict setObject:privacyObj forKey:@"privacy"];
-    
-    
-    if( [dict count] >0 )
-        bodyData = [self generatePostBody:dict];
-    return bodyData;
-}
-+(NSString*)urlForPostFacebookObject:(FacebookObject*)fob
-{
-    FacebookObjectType type = fob.type;
-    NSString *url=fob.toID==nil?@"me/feed":[NSString stringWithFormat:@"%@/feed", fob.toID];
-    if( type == FacebookObjectTypePhoto )
-    {
-        url=fob.toID==nil?@"me/photos":[NSString stringWithFormat:@"%@/photos", fob.toID];
-    }
-    else 
-    {
-        
-    }
-    return url;
-}
-+(void) queueOperationForPostStatus:(FacebookObject*)fob privacy:(NSDictionary *)privacy  handler:(JokinglyHandler) handler;
-{
-    NSData *dataBody = [self bodyForPostStatus:fob privacy:privacy];
-    
-    NSString *postURL = [self urlForPostFacebookObject:fob];
-    
-    
-    JokinglyOperation *operation = [JokinglyOperation multiPartPostOperationWithURL:[self urlForRequest:postURL andParams:nil] andBody:dataBody];
-    operation.checkForAppErrorHandler = [self checkForErrorHandler];
-    [operation addErrorHandler:[self errorHandler]];
-    [operation addSuccessHandler:handler];
-    [[self operationQueue] addOperation:operation];
-}
 
 
 #pragma mark - Loaders
 
 
-
-+(void) loadConnectionForObject:(FacebookObject*) object handler:(FacebookConnectionHandler) handler {
+-(void) loadConnectionForObject:(FacebookObject*) object handler:(FacebookConnectionHandler) handler {
+    
     if (!object || !object.graphPath) {
+        return;
+    }
+    
+    if (object.connectionType == FacebookObjectConnectionTypeHome && ![self accessToken]) {
+        NSLog(@"!!! Must supply accessToken via [FacebookClient setAccessToken] to retrieve user's home feed!");
         return;
     }
     
@@ -320,13 +187,11 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
         }
     }
     
-    [FacebookClient queueNoCacheOperationForURL:query handler:^(JokinglyOperation *operation) {
-        if (operation.isSuccessful) {
-            NSArray *parsedObj = operation.result;
+    [self getJSON:query handler:^(id jsonObj) {
             NSArray *parsedResults;
             if (object.fql) {
-                parsedResults = [FacebookClient parseNewsFeedResponseIntoFacebookObjects:parsedObj expectedType:object.type];
-            } else parsedResults = [FacebookClient parseArrayResponseIntoFacebookObjects:parsedObj expectedType:object.type];
+                parsedResults = [self parseNewsFeedResponseIntoFacebookObjects:jsonObj expectedType:object.type];
+            } else parsedResults = [self parseArrayResponseIntoFacebookObjects:jsonObj expectedType:object.type];
             if (parsedResults && parsedResults.count > 0) {
                 // Prepend the results to the existing array
                 NSMutableArray *newData = [NSMutableArray arrayWithArray:parsedResults];
@@ -341,29 +206,21 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
                 [self saveObject:archivedObject withKey:object.graphPath];
                 handler(archivedObject, loadType, parsedResults.count);
             }
-        }
     }];
-    
 }
 
-+(void) loadObjectWithId:(NSString*) objectID expectedType:(FacebookObjectType) type handler:(FacebookObjectHandler) handler {
+-(void) loadObjectWithId:(NSString*) objectID expectedType:(FacebookObjectType) type handler:(FacebookObjectHandler) handler {
     if (objectID) {
-        JokinglyOperation *operation = [self operationForURL:objectID];
-        operation.shouldCheckCache = YES;
-        operation.shouldStoreInCache = YES;
-        [operation addSuccessHandler:^(JokinglyOperation *operation) {
-            if (operation.result) {
-                FacebookObject *object = [self parseJSONDictIntoFacebookObject:operation.result expectedType:type];
-                handler(object);
-            }
+        [self getJSON:objectID handler:^(id jsonObject) {
+            FacebookObject *object = [self parseJSONDictIntoFacebookObject:jsonObject expectedType:type];
+            handler(object);
         }];
-        [[self operationQueue] addOperation:operation];
     }
 }
 
 // Populates out the object with all the information about it
 
-+ (void) loadUser:(FacebookObject*) user handler:(FacebookObjectHandler) handler {
+- (void) loadUser:(FacebookObject*) user handler:(FacebookObjectHandler) handler {
     
     BOOL isCurrentUserRequest = [user.objectID isEqualToString:@"me"];
     //Make sure we use the actual current userid
@@ -387,7 +244,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
             }
         }
     }
-
+    
     // The basic connections for normal users and pages
     NSMutableArray *urls = [NSMutableArray arrayWithObjects:user.objectID, [NSString stringWithFormat:@"%@/albums?limit=5000",  user.objectID],  [NSString stringWithFormat:@"%@/likes?limit=100", user.objectID], [NSString stringWithFormat:@"%@/groups", user.objectID],  nil];
     
@@ -397,27 +254,26 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
         [urls addObject:[NSString stringWithFormat:@"%@/friendlists", user.objectID]];
     }
     
-    [self queueBatchOperationForURLs:urls handler:^(JokinglyOperation *operation) {
-        NSArray *jsonResult = operation.result;
+    [self queueBatchOperationForURLs:urls handler:^(id jsonResult) {
         if (jsonResult && [jsonResult isKindOfClass:[NSArray class]]) {
             
             NSDictionary *profileInfo = [[[jsonResult objectAtIndex:0] valueForKey:@"body"] objectFromJSONString];
-            FacebookObject *objectToLoad = [FacebookClient parseJSONDictIntoFacebookObject:profileInfo expectedType:object.type];
+            FacebookObject *objectToLoad = [self parseJSONDictIntoFacebookObject:profileInfo expectedType:user.type];
             objectToLoad.originalObject = jsonResult;
             objectToLoad.uuid = object.uuid;
             
             NSDictionary *albumsJSON = [[[jsonResult objectAtIndex:1] valueForKey:@"body"] objectFromJSONString];
             NSArray *albums = [albumsJSON valueForKey:@"data"];
-            objectToLoad.albums = [FacebookClient parseArrayResponseIntoFacebookObjects:albums expectedType:FacebookObjectTypeAlbum];
+            objectToLoad.albums = [self parseArrayResponseIntoFacebookObjects:albums expectedType:FacebookObjectTypeAlbum];
             
             NSDictionary *likesJSON = [[[jsonResult objectAtIndex:2] valueForKey:@"body"] objectFromJSONString];
             NSArray *likes = [likesJSON valueForKey:@"data"];
-            objectToLoad.likes = [FacebookClient parseArrayResponseIntoFacebookObjects:likes  expectedType:FacebookObjectTypePage];
+            objectToLoad.likes = [self parseArrayResponseIntoFacebookObjects:likes  expectedType:FacebookObjectTypePage];
             
             
             NSDictionary *groupsJSON = [[[jsonResult objectAtIndex:3] valueForKey:@"body"] objectFromJSONString];
             NSArray *groups = [groupsJSON valueForKey:@"data"];
-            objectToLoad.groups = [FacebookClient parseArrayResponseIntoFacebookObjects:groups expectedType:FacebookObjectTypeGroup];
+            objectToLoad.groups = [self parseArrayResponseIntoFacebookObjects:groups expectedType:FacebookObjectTypeGroup];
             
             // connections that only should be loaded for the currrent user
             if ([objectToLoad.objectID isEqualToString:[self currentUserID]] || [objectToLoad.objectID isEqualToString:@"me"]) {
@@ -425,13 +281,13 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
                 // http://stackoverflow.com/questions/3818588/getting-friends-of-friends-in-fb-graph-api
                 NSDictionary *friendsJSON = [[[jsonResult objectAtIndex:4] valueForKey:@"body"] objectFromJSONString];
                 NSArray *friends = [friendsJSON valueForKey:@"data"];
-                objectToLoad.friends = [FacebookClient parseArrayResponseIntoFacebookObjects:friends expectedType:FacebookObjectTypeUser];
+                objectToLoad.friends = [self parseArrayResponseIntoFacebookObjects:friends expectedType:FacebookObjectTypeUser];
                 
                 NSDictionary *friendlistsJSON = [[[jsonResult objectAtIndex:5] valueForKey:@"body"] objectFromJSONString];
                 NSArray *friendlists = [friendlistsJSON valueForKey:@"data"];
-                objectToLoad.friendlists = [FacebookClient parseArrayResponseIntoFacebookObjects:friendlists expectedType:FacebookObjectTypeGroup];
+                objectToLoad.friendlists = [self parseArrayResponseIntoFacebookObjects:friendlists expectedType:FacebookObjectTypeGroup];
                 
-                 
+                
             }
             objectToLoad.connections = [self connectionsForObject:objectToLoad];
             [self saveObject:objectToLoad withKey:objectToLoad.graphPath];
@@ -444,7 +300,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     
 }
 
-+(void) loadAlbumForPhoto:(FacebookObject*) photo handler:(FacebookObjectHandler) handler {
+-(void) loadAlbumForPhoto:(FacebookObject*) photo handler:(FacebookObjectHandler) handler {
     if (photo.album && photo.album.name) {
         handler(photo.album);
     }
@@ -455,32 +311,15 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-// Can be used to download a bunch of pics in advance of a group of friends to make scrolling faster
-+ (void) loadPicsOfFriends:(NSArray *)friends withPictureString:(NSString*) pictureString shouldDownloadIfInCache:(BOOL) shouldDownloadIfInCache {
-    
-    if (!(friends && [friends count])) return;
-    
-    //Create download operations for these friends pics
-    for (NSDictionary *friend in friends) {
-        NSString *pictureURL = [NSString stringWithFormat:[pictureString copy], [friend valueForKey:@"id"]];
-        JokinglyOperation *operation = [self photoOperationForURL:pictureURL];
-        operation.shouldDownloadIfInCache = shouldDownloadIfInCache;
-        [[self operationQueue] addOperation:operation];
-    }
-}
 
-+ (void) loadLikesForObjectId:(NSString*) objectId handler:(FacebookLikesHandler) handler {
+- (void) loadLikesForObjectId:(NSString*) objectId handler:(FacebookLikesHandler) handler {
     if (objectId) {
         NSString *likesURL = [NSString stringWithFormat:@"%@/likes", objectId];
-        JokinglyOperation *operation = [self operationForURL:likesURL];
-        operation.shouldCheckCache = YES;
-        operation.shouldStoreInCache = YES;
-        [operation addSuccessHandler:^(JokinglyOperation *operation) {
-            if (operation.result && [operation.result isKindOfClass:[NSArray class]]) {
-                handler(objectId, operation.result);
+        [self getJSON:likesURL handler:^(id jsonObject) {
+            if (jsonObject && [jsonObject isKindOfClass:[NSArray class]]) {
+                handler(objectId, jsonObject);
             }
         }];
-        [[self operationQueue] addOperation:operation];
     }
 }
 
@@ -491,7 +330,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 
 //https://www.facebook.com/logout.php?next=YOUR_URL&access_token=ACCESS_TOKEN
 
-+(NSString*) idInDict:(NSDictionary*) dict {
+-(NSString*) idInDict:(NSDictionary*) dict {
     NSString *objectID;
     if ([dict valueForKey:@"object_id"]) {
         objectID = [dict valueForKey:@"object_id"];
@@ -517,7 +356,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return objectID;
 }
 
-+ (NSString*) valueToString:(id) value {
+- (NSString*) valueToString:(id) value {
     if ([value isKindOfClass:[NSString class]]) {
         return value;
     }
@@ -531,7 +370,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+ (NSString*) pictureURLForObjectID:(NSString*) objectID {
+- (NSString*) pictureURLForObjectID:(NSString*) objectID {
     if (!objectID) {
         return nil;
     }
@@ -541,13 +380,13 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
         NSAssert(false, @"need to catch FQL nulls");
     }
     
-    NSString *accessToken = [FacebookClient accessToken];
+    NSString *accessToken = [self accessToken];
     NSString *url = [NSString stringWithFormat:@"https://graph.facebook.com/%@/picture", objectIDString];
     url = [url stringByAppendingFormat:@"?access_token=%@", accessToken];
     return url;
 }
 
-+(FacebookObjectType) typeFromDict:(NSDictionary*) dict {
+-(FacebookObjectType) typeFromDict:(NSDictionary*) dict {
     id typeObject = [dict valueForKey:@"type"];
     if ([typeObject isKindOfClass:[NSString class]]) {
         return  [typeObject FacebookObjectTypeFromString];
@@ -578,7 +417,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return FacebookObjectTypeMixed;
 }
 
-+(void) setTimestampsFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
+-(void) setTimestampsFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
     NSString *createdTimeString = [dict valueForKey:@"created_time"];
     if (createdTimeString) {
         object.createdAt = [NSDate dateWithTimeIntervalSince1970:[createdTimeString doubleValue]];
@@ -590,14 +429,14 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 //Extract the album id from the link using logic found http://stackoverflow.com/a/7236370/32829
-+(NSString*) extractAlbumIdFromLink:(NSString*) link {
+-(NSString*) extractAlbumIdFromLink:(NSString*) link {
     if (link && link.length > 20) {
-        NSInteger firstPos = [link rangeOfString:@"set=a."].location + 6;
+        NSInteger firstPos = [link rangeOfString:@"set=a."].location - 6;
         if (firstPos <= 0) {
-            firstPos = [link rangeOfString:@"set=p."].location + 6;
+            firstPos = [link rangeOfString:@"set=p."].location - 6;
         }
         if (firstPos <= 0) {
-            firstPos = [link rangeOfString:@"set=at."].location + 7;
+            firstPos = [link rangeOfString:@"set=at."].location - 7;
         }
         if (firstPos >0 ) {
             NSArray *restOfString = [[link substringFromIndex:firstPos] componentsSeparatedByString:@"."];
@@ -614,7 +453,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return nil;
 }
 
-+ (void) setVideoFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
+- (void) setVideoFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
     if (object.type != FacebookObjectTypeVideo) {
         return;
     }
@@ -624,7 +463,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }
 }
 
-+(void) setAlbumIDFromDict:(NSDictionary*)dict onObject:(FacebookObject*) object {
+-(void) setAlbumIDFromDict:(NSDictionary*)dict onObject:(FacebookObject*) object {
     
     if (!object.album) {
         object.album = [[FacebookObject alloc] init];
@@ -645,7 +484,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }                        
 }
 
-+(void) setPictureFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
+-(void) setPictureFromDict:(NSDictionary*) dict onObject:(FacebookObject*) object {
     
     FacebookObjectType type = object.type;//[self typeFromDict:dict];
     
@@ -704,7 +543,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }
     
     if (!object.picture && objectID && ![objectID containsString:@"_"]) {
-        object.picture = [FacebookClient pictureURLForObjectID:objectID];
+        object.picture = [self pictureURLForObjectID:objectID];
     }
     
     if (object.picture && [object.picture isKindOfClass:[NSArray class]]) {
@@ -723,7 +562,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+(void) setCommentsFromDict:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
+-(void) setCommentsFromDict:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
     
     // Sometimes, such as in the multi-query case, the comments are directly off the main object
     NSArray *comments = [dict valueForKey:@"comments"];
@@ -783,7 +622,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }
 }
 
-+(void) setLikesFromDict:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
+-(void) setLikesFromDict:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
     
     // Sometimes, such as in the multi-query case, the comments are directly off the main object
     NSArray *likes = [dict valueForKey:@"likes"];
@@ -824,7 +663,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+(void) setLinkFromResponse:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
+-(void) setLinkFromResponse:(NSDictionary*) dict onFacebookObject:(FacebookObject*) object {
     NSDictionary *attachment = [dict valueForKey:@"attachment"];
     if (attachment) {
         object.link = [attachment valueForKey:@"href"];
@@ -840,7 +679,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }
 }
 
-+(NSArray*) parseNewsFeedResponseIntoFacebookObjects:(id) response expectedType:(FacebookObjectType) expectedType  {
+-(NSArray*) parseNewsFeedResponseIntoFacebookObjects:(id) response expectedType:(FacebookObjectType) expectedType  {
     
     if ([response isKindOfClass:[NSDictionary class]] && [response valueForKey:@"error_code"]) {
         //Check for an error
@@ -906,7 +745,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     
 }
 
-+ (NSArray*) parseArrayResponseIntoFacebookObjects:(NSArray*) arrayResponse expectedType:(FacebookObjectType) expectedType  {
+- (NSArray*) parseArrayResponseIntoFacebookObjects:(NSArray*) arrayResponse expectedType:(FacebookObjectType) expectedType  {
     
     if ([arrayResponse isKindOfClass:[NSDictionary class]] && [arrayResponse valueForKey:@"error_code"]) {
         //Check for an error
@@ -924,7 +763,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     
 }
 
-+(FacebookObject*) parseJSONDictIntoFacebookObject:(NSDictionary*) dict expectedType:(FacebookObjectType) expectedType {
+-(FacebookObject*) parseJSONDictIntoFacebookObject:(NSDictionary*) dict expectedType:(FacebookObjectType) expectedType {
     FacebookObject *object = [[FacebookObject alloc] init];
     if (expectedType != FacebookObjectTypeMixed) {
         object.type = expectedType;
@@ -991,7 +830,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 
 
 
-+(FacebookObject*) createHomeConnectionForObject:(FacebookObject*) object withName:(NSString*) name{
+-(FacebookObject*) createHomeConnectionForObject:(FacebookObject*) object withName:(NSString*) name{
     NSString *userID = object.objectID;
     NSString *pictureURL = object.from.picture ? object.from.picture : object.picture;
     
@@ -999,7 +838,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     source.objectID = object.objectID;
     source.name = name;
     source.type = FacebookObjectTypeMixed;
-    source.additionalInfo = FacebookClientMultiQuery;
+    source.additionalInfo = kFacebookClientMultiQuery;
     source.icon = @"User.png"; 
     NSMutableArray *connections = [NSMutableArray array];
     
@@ -1007,8 +846,8 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     mixed.type = FacebookObjectTypeMixed;
     mixed.objectID = object.objectID;
     mixed.connectionType = @"home/feed";
-    mixed.fql = [FacebookClient newsFeedQueryForUser:userID limit:kAHSwiftInitialCellLimit];
-    mixed.additionalInfo = FacebookClientMultiQuery;
+    mixed.fql = [self newsFeedQueryForUser:userID limit:kFacebookObjectInitialCellLimit];
+    mixed.additionalInfo = kFacebookClientMultiQuery;
     mixed.name = @"All";
     mixed.picture = pictureURL;
     [connections addObject:mixed]; 
@@ -1018,8 +857,8 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     photos.name = @"Photos";
     photos.objectID = object.objectID;
     photos.connectionType = @"home/photos";
-    photos.fql = [FacebookClient streamQueryForUser:userID andType:FacebookObjectTypePhoto limit:kAHSwiftInitialCellLimit updatedTime:0];
-    photos.additionalInfo = FacebookClientMultiQuery;
+    photos.fql = [self streamQueryForUser:userID andType:FacebookObjectTypePhoto limit:kFacebookObjectInitialCellLimit updatedTime:0];
+    photos.additionalInfo = kFacebookClientMultiQuery;
     photos.picture = pictureURL;
     photos.type = FacebookObjectTypePhoto;
     
@@ -1028,8 +867,8 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     links.type = FacebookObjectTypeLink;
     links.objectID = object.objectID;
     links.connectionType = @"home/links";
-    links.fql = [FacebookClient streamQueryForUser:userID andType:FacebookObjectTypeLink limit:kAHSwiftInitialCellLimit updatedTime:0];
-    links.additionalInfo = FacebookClientMultiQuery;
+    links.fql = [self streamQueryForUser:userID andType:FacebookObjectTypeLink limit:kFacebookObjectInitialCellLimit updatedTime:0];
+    links.additionalInfo = kFacebookClientMultiQuery;
     links.picture = pictureURL;
     [connections addObject:links]; 
     
@@ -1038,8 +877,8 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     statuses.type = FacebookObjectTypeStatus;
     statuses.objectID = object.objectID;
     statuses.connectionType = @"home/statuses";
-    statuses.fql = [FacebookClient streamQueryForUser:userID andType:FacebookObjectTypeStatus limit:kAHSwiftInitialCellLimit updatedTime:0];
-    statuses.additionalInfo = FacebookClientMultiQuery;
+    statuses.fql = [self streamQueryForUser:userID andType:FacebookObjectTypeStatus limit:kFacebookObjectInitialCellLimit updatedTime:0];
+    statuses.additionalInfo = kFacebookClientMultiQuery;
     statuses.picture = pictureURL;
     [connections addObject:statuses]; 
     
@@ -1048,11 +887,12 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+(FacebookObject*) createFeedConnectionForObject:(FacebookObject*) object withName:(NSString*) name {
+-(FacebookObject*) createFeedConnectionForObject:(FacebookObject*) object withName:(NSString*) name {
     NSString *objectID = object.objectID;
     NSString *pictureURL = object.from.picture ? object.from.picture : object.picture;
     
     FacebookObject *feed = [[FacebookObject alloc] init];
+    feed.connectionType = FacebookObjectConnectionTypeFeed;
     feed.objectID = objectID;
     feed.name = name;
     feed.type = FacebookObjectTypeMixed;
@@ -1100,7 +940,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return feed;
 }
 
-+(NSArray*) connectionsForObject:(FacebookObject *)object {
+-(NSArray*) connectionsForObject:(FacebookObject *)object {
     
     // Creates typical connections on the object based on the object type
     NSMutableArray *connections = [NSMutableArray array];    
@@ -1242,24 +1082,24 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 #pragma mark URL builders
 
 
-+ (NSString*) buildMultiQuery:(NSDictionary*) queryDict {
+- (NSString*) buildMultiQuery:(NSDictionary*) queryDict {
     return [NSString stringWithFormat:@"fql?q=%@", [queryDict JSONString]];
 }
 
-+(NSString*) streamSQLforFilter:(NSString*) whereClause limit:(NSInteger) limit {
+-(NSString*) streamSQLforFilter:(NSString*) whereClause limit:(NSInteger) limit {
     return [NSString stringWithFormat:@"SELECT created_time, updated_time, attachment, post_id, source_id, actor_id, target_id, message, likes, privacy, tagged_ids, message_tags, description, description_tags, type FROM stream WHERE %@  limit %ld", whereClause, limit];
 }
 
-+ (NSString*) commentsQueryReferencingQueryWithName:(NSString*) name {
+- (NSString*) commentsQueryReferencingQueryWithName:(NSString*) name {
     return [NSString stringWithFormat:@"select post_id, fromid, object_id, text, time, can_like, user_likes from comment where post_id in (SELECT post_id FROM #%@)", name];
 }
 
-+(NSString*) profileQueryReferencingQueryWithName:(NSString*) name {
+-(NSString*) profileQueryReferencingQueryWithName:(NSString*) name {
     return [NSString stringWithFormat:@"SELECT name, id FROM profile WHERE id IN (SELECT actor_id FROM #%@) or id in (select fromid from #commentsQuery)", name];
 }
 
 
-+(NSString*) streamFilterForFacebookObjectType:(FacebookObjectType) type {
+-(NSString*) streamFilterForFacebookObjectType:(FacebookObjectType) type {
     NSString *filterClause = [NSString stringWithFormat:@"filter_key=\'%@\'", [self filterKeyForFacebookObjectType:type]];
     if (type == FacebookObjectTypeStatus) {
         filterClause = [NSString stringWithFormat:@"%@ and type=\'%@\'", filterClause, [self storyTypeForFacebooObjectType:type]];
@@ -1267,7 +1107,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return filterClause;
 }
 
-+ (NSString*) storyTypeForFacebooObjectType:(FacebookObjectType) type {
+- (NSString*) storyTypeForFacebooObjectType:(FacebookObjectType) type {
     switch (type) {
         case FacebookObjectTypePhoto:
             return @"247";
@@ -1287,7 +1127,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return @"";
 }
 
-+(NSString*) filterKeyForFacebookObjectType:(FacebookObjectType) type {
+-(NSString*) filterKeyForFacebookObjectType:(FacebookObjectType) type {
     switch (type) {
         case FacebookObjectTypePhoto:
             return @"app_2305272732_2392950137";
@@ -1308,7 +1148,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+(NSString*) streamQueryForUser:(NSString*) userID andType:(FacebookObjectType) type limit:(NSInteger) limit updatedTime:(NSInteger) updatedTime {
+-(NSString*) streamQueryForUser:(NSString*) userID andType:(FacebookObjectType) type limit:(NSInteger) limit updatedTime:(NSInteger) updatedTime {
     NSString *filterString = [self streamFilterForFacebookObjectType:type];  //[NSString stringWithFormat:@"filter_key in (SELECT filter_key FROM stream_filter WHERE uid = %@ AND type = 'newsfeed')", userID];
     if (updatedTime > 0) {
         filterString = [NSString stringWithFormat:@"%@ and updated_time > %ld", filterString, updatedTime];
@@ -1320,87 +1160,169 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return [self buildMultiQuery:queriesDict];
 }
 
-+(NSString*) newsFeedQueryForUser:(NSString*) userID limit:(NSInteger) limit {
+-(NSString*) newsFeedQueryForUser:(NSString*) userID limit:(NSInteger) limit {
     return [self streamQueryForUser:userID andType:FacebookObjectTypeMixed limit:limit updatedTime:0];
 }
 
 
+
+
+
+#pragma mark - Posting Statuses
+
+-(NSString*)privacyObject:(NSDictionary*)privacy
+{
+    NSString *strJson=nil;
+    if( [privacy count] >0 )
+        strJson = [privacy JSONString];
+    
+    return strJson;
+}
+//-(NSData*)bodyForPostStatus:(FacebookObject*)obj privacy:(NSDictionary*)privacy
+//{
+//    NSMutableDictionary *dict=[NSMutableDictionary dictionaryWithCapacity:5];
+//    NSData *bodyData=nil;
+//    obj.type = FacebookObjectTypeStatus;
+//    
+//    // Priority : Image --> Link --> Text status
+//    if ( obj.imageBinary && ([obj.imageBinary isKindOfClass:[NSData class]] || [obj.imageBinary isKindOfClass:[NSString class]]) )
+//    {
+//        obj.type = FacebookObjectTypePhoto;
+//        [dict setObject:obj.imageBinary forKey:@"image"];
+//        if( obj.message )
+//            [dict setObject:obj.message forKey:@"message"];
+//        else if( obj.name )
+//            [dict setObject:obj.name forKey:@"message"];
+//        else if( obj.caption )
+//            [dict setObject:obj.caption forKey:@"message"];
+//    }
+//    else if( obj.link!=nil)
+//    {
+//        obj.type = FacebookObjectTypeLink;
+//        [dict setObject:obj.link forKey:@"link"];
+//        if( obj.message )
+//            [dict setObject:obj.message forKey:@"message"];
+//        if( obj.name )
+//            [dict setObject:obj.name forKey:@"name"];
+//        if( obj.caption )
+//            [dict setObject:obj.caption forKey:@"caption"];
+//        /* // TODO; description conflicts with NSObject
+//         if( obj.description )
+//         [dict setObject:obj.description forKey:@"description"];
+//         */
+//    }
+//    else if( 0 /* TODO: Video */ )
+//    {
+//        obj.type = FacebookObjectTypeVideo;
+//        
+//    }
+//    else
+//    {
+//        obj.type = FacebookObjectTypeStatus;
+//        [dict setObject:@"status" forKey:@"type"];
+//        if( obj.message )
+//            [dict setObject:obj.message forKey:@"message"];
+//        if( obj.name )
+//            [dict setObject:obj.name forKey:@"name"];
+//    }
+//    NSString *privacyObj = [self privacyObject:privacy];
+//    if( privacyObj && [obj.toID length]==0 )    // don't apply privacy settings if we have a destination
+//        [dict setObject:privacyObj forKey:@"privacy"];
+//    
+//    
+//    if( [dict count] >0 )
+//        bodyData = [self generatePostBody:dict];
+//    return bodyData;
+//}
+//
+//-(NSString*)urlForPostFacebookObject:(FacebookObject*)fob
+//{
+//    FacebookObjectType type = fob.type;
+//    NSString *url=fob.toID==nil?@"me/feed":[NSString stringWithFormat:@"%@/feed", fob.toID];
+//    if( type == FacebookObjectTypePhoto )
+//    {
+//        url=fob.toID==nil?@"me/photos":[NSString stringWithFormat:@"%@/photos", fob.toID];
+//    }
+//    else 
+//    {
+//        
+//    }
+//    return url;
+//}
+//
+//
+//-(void) postStatus:(FacebookObject*)fob privacy:(NSDictionary *)privacy  handler:(FacebookObjectHandler) handler;
+//{
+//    //TODO: convert to AFNetworking
+//    NSAssert(false, @"Not implemented");
+//    //    NSData *dataBody = [self bodyForPostStatus:fob privacy:privacy];
+//    //    
+//    //    NSString *postURL = [self urlForPostFacebookObject:fob];
+//    //    
+//    //    [self multipartFormRequestWithMethod:@"POST" path:postURL parameters:nil constructingBodyWithBlock:nil];
+//}
+//
+//- (NSMutableData *)generatePostBody :(NSDictionary*)_params {
+//    
+//    //NSString* kStringBoundary = @"3i2ndDfv2rTHiSisAbouNdArYfORhtTPEefj3q2f";
+//    NSMutableData *body = [NSMutableData data];
+//    NSString *endLine = [NSString stringWithFormat:@"\r\n--%@\r\n", kJokinglyPostRequestStringBoundary];
+//    NSMutableDictionary *dataDictionary = [NSMutableDictionary dictionary];
+//    
+//    [self utfAppendBody:body data:[NSString stringWithFormat:@"--%@\r\n", kJokinglyPostRequestStringBoundary]];
+//    
+//    for (id key in [_params keyEnumerator]) {
+//        
+//        if (([[_params valueForKey:key] isKindOfClass:[NSData class]])) {
+//            
+//            [dataDictionary setObject:[_params valueForKey:key] forKey:key];
+//            continue;
+//            
+//        }
+//        
+//        [self utfAppendBody:body
+//                       data:[NSString
+//                             stringWithFormat:@"Content-Disposition: form-data; name=\"%@\"\r\n\r\n",
+//                             key]];
+//        [self utfAppendBody:body data:[_params valueForKey:key]];
+//        
+//        [self utfAppendBody:body data:endLine];
+//    }
+//    
+//    if ([dataDictionary count] > 0) {
+//        for (id key in dataDictionary) {
+//            NSObject *dataParam = [dataDictionary valueForKey:key];
+//            if ([dataParam isKindOfClass:[NSData  class]]) {
+//                [self utfAppendBody:body  data:[NSString stringWithFormat:  @"Content-Disposition: form-data; filename=\"%@\"\r\n", key]];
+//                [self utfAppendBody:body  data:@"Content-Type: image/png\r\n\r\n"];
+//                [body appendData:(NSData*)dataParam];
+//            }             
+//            [self utfAppendBody:body data:endLine];
+//            
+//        }
+//    }
+//    
+//    return body;
+//}
+
 #pragma mark - Helpers
 
 
-+ (NSString*)urlForRequest:(NSString*) request andParams:(NSDictionary*) params {
-    NSString *escapedRequest = [request stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
-    NSString *accessToken = [FacebookClient accessToken];
-    NSString *url = nil;
-    if ([escapedRequest containsString:@"http://"]) url = escapedRequest;
-    else url = [NSString stringWithFormat: FacebookClientGraphApiGetURL, escapedRequest];
-    
-    if (![escapedRequest containsString:@"?"]) url = [url stringByAppendingFormat:@"?access_token=%@", accessToken];
-    else url = [url stringByAppendingFormat:@"&access_token=%@", accessToken];
-    
-    // make sure all dates are returned as unix timestamps
-    url = [url stringByAppendingString:@"&date_format=U"];
-    
-    if (params != nil) 
-    {
-        NSMutableString *strWithParams = [NSMutableString stringWithString: url];
-        for (NSString *p in [params allKeys]) 
-            [strWithParams appendFormat: @"&%@=%@", p, [params objectForKey: p]];
-        url = strWithParams;
-    }
-    return url;
+- (NSString*)pathWithToken:(NSString*) path  {
+    NSString *accessToken = [self accessToken];
+    if (!accessToken) return path;
+    if (![path containsString:@"?"]) path = [path stringByAppendingFormat:@"?access_token=%@", accessToken];
+    else path = [path stringByAppendingFormat:@"&access_token=%@", accessToken];
+    return path;
 }
 
 
-+ (void)utfAppendBody:(NSMutableData *)body data:(NSString *)data {
+- (void)utfAppendBody:(NSMutableData *)body data:(NSString *)data {
     [body appendData:[data dataUsingEncoding:NSUTF8StringEncoding]];
 }
 
-+ (NSMutableData *)generatePostBody :(NSDictionary*)_params {
-    
-    //NSString* kStringBoundary = @"3i2ndDfv2rTHiSisAbouNdArYfORhtTPEefj3q2f";
-    NSMutableData *body = [NSMutableData data];
-    NSString *endLine = [NSString stringWithFormat:@"\r\n--%@\r\n", kJokinglyPostRequestStringBoundary];
-    NSMutableDictionary *dataDictionary = [NSMutableDictionary dictionary];
-    
-    [self utfAppendBody:body data:[NSString stringWithFormat:@"--%@\r\n", kJokinglyPostRequestStringBoundary]];
-    
-    for (id key in [_params keyEnumerator]) {
-        
-        if (([[_params valueForKey:key] isKindOfClass:[NSData class]])) {
-            
-            [dataDictionary setObject:[_params valueForKey:key] forKey:key];
-            continue;
-            
-        }
-        
-        [self utfAppendBody:body
-                       data:[NSString
-                             stringWithFormat:@"Content-Disposition: form-data; name=\"%@\"\r\n\r\n",
-                             key]];
-        [self utfAppendBody:body data:[_params valueForKey:key]];
-        
-        [self utfAppendBody:body data:endLine];
-    }
-    
-    if ([dataDictionary count] > 0) {
-        for (id key in dataDictionary) {
-            NSObject *dataParam = [dataDictionary valueForKey:key];
-            if ([dataParam isKindOfClass:[NSData  class]]) {
-                [self utfAppendBody:body  data:[NSString stringWithFormat:  @"Content-Disposition: form-data; filename=\"%@\"\r\n", key]];
-                [self utfAppendBody:body  data:@"Content-Type: image/png\r\n\r\n"];
-                [body appendData:(NSData*)dataParam];
-            }             
-            [self utfAppendBody:body data:endLine];
-            
-        }
-    }
-    
-    return body;
-}
 
-
-+ (NSArray*) sortFriendsByName:(NSArray*) friends {
+- (NSArray*) sortFriendsByName:(NSArray*) friends {
     if (!friends) return nil;
     return [friends sortedArrayUsingComparator:^NSComparisonResult(id obj1, id obj2) {
         NSString *name1 = [obj1 valueForKey:@"name"];
@@ -1409,7 +1331,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }];
 }
 
-+(NSString*) userIdForURL:(NSString *) url {
+-(NSString*) userIdForURL:(NSString *) url {
     if ([url hasPrefix:@"me"]) {
         return @"me";
     }
@@ -1417,10 +1339,9 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
 }
 
 
-+ (JokinglyJSONHandler) jsonHandler {
-    JokinglyJSONHandler jsonHandler;
-    jsonHandler = ^id(JokinglyOperation* operation, id obj) {
-        if (!operation.appError) {
+- (FacebookJSONParseHandler) jsonHandler {
+    static FacebookJSONParseHandler jsonHandler;
+    jsonHandler = ^id(id obj) {
             if (obj && [obj isKindOfClass:[NSDictionary class]]) {
                 if ([[obj allKeys] count] <= 2) {
                     NSArray *arr = [obj valueForKey:@"data"];
@@ -1436,51 +1357,43 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
                     }
                 }
             }
-        }
+        
         return nil;
     };
     return jsonHandler;
 }
 
 
-+ (JokinglyHandler) checkForErrorHandler {
-    JokinglyHandler checkForErrorHandler;
-    checkForErrorHandler = ^(JokinglyOperation* operation) {
-        if (operation.result && [operation.result isKindOfClass:[NSDictionary class]]) {
-            NSDictionary *error  = [operation.result valueForKey:@"error"];
-            if (error) {
-                NSString *message = [error valueForKey:@"message"];
-                operation.appError = [NSString stringWithFormat:@"Bad FB request %@", message];
-                NSLog(@"%@", operation.appError);
-            }
+-(AFFailureHandler) defaultFailureHandler {
+    static AFFailureHandler handler;
+    
+    handler = ^void(AFHTTPRequestOperation *operation, NSError *error) {
+        if ([error.description containsString:@"Invalid OAuth"]) {
+            [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:kFacebookClientRejectedAccessToken object:nil]];
         }
     };
-    return checkForErrorHandler;
+    return handler;
 }
 
-+ (JokinglyHandler) errorHandler {
-    JokinglyHandler errorHandler;
-    errorHandler = ^(JokinglyOperation* operation) {
-        // Publish any error
-        // Check for HTTP error, FB errors are returned inside the HTTP body
-        if(operation.connectionError) {
-            [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:FacebookClientConnectionError object:nil]];
-            return;
-        }
-        
-        if (operation.appError) {
-            if ([operation.appError containsString:@"Invalid OAuth"]) {
-                [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:FacebookClientRejectedAccessToken object:nil]];
-            }
-        }
-        
-    };
-    return errorHandler;
-}
+
+
+//- (FacebookObjectHandler) errorHandler {
+//    FacebookObjectHandler errorHandler;
+//    errorHandler = ^(JokinglyOperation* operation) {
+//        
+//        if (operation.appError) {
+//            if ([operation.appError containsString:@"Invalid OAuth"]) {
+//                [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:FacebookClientRejectedAccessToken object:nil]];
+//            }
+//        }
+//        
+//    };
+//    return errorHandler;
+//}
 
 # pragma mark - Properties
 
-+ (NSOperationQueue *)operationQueue {
+- (NSOperationQueue *)operationQueue {
     static NSOperationQueue *operationQueue;
     
     if (!operationQueue) {
@@ -1491,104 +1404,90 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return operationQueue;
 }
 
-+ (NSString*) accessToken {
-    NSString * accessToken = [[NSUserDefaults standardUserDefaults] valueForKey:FacebookClientAccessToken];
+- (NSString*) accessToken {
+    NSString * accessToken = [[NSUserDefaults standardUserDefaults] valueForKey:kFacebookClientAccessToken];
     return accessToken;
 }
 
-+ (NSString*) accessTokenExpiration {
-    return [[NSUserDefaults standardUserDefaults] valueForKey:FacebookClientStoreTokenExpiry];
+- (NSString*) accessTokenExpiration {
+    return [[NSUserDefaults standardUserDefaults] valueForKey:kFacebookClientStoreTokenExpiry];
 }
 
-+ (NSString*) accessPermissions {
-    return [[NSUserDefaults standardUserDefaults] valueForKey:FacebookClientStoreAccessPermissions];    
+- (NSString*) accessPermissions {
+    return [[NSUserDefaults standardUserDefaults] valueForKey:kFacebookClientStoreAccessPermissions];    
 }
 
-+ (void) setAccessToken:(NSString*) accessToken {
-    [[NSUserDefaults standardUserDefaults] setValue:accessToken forKey:FacebookClientAccessToken];
+- (void) setAccessToken:(NSString*) accessToken {
+    [[NSUserDefaults standardUserDefaults] setValue:accessToken forKey:kFacebookClientAccessToken];
 }
 
-+ (void) setAccessTokenExpiration:(NSDate*) accessTokenExpiration {
-    [[NSUserDefaults standardUserDefaults] setValue:accessTokenExpiration forKey:FacebookClientStoreTokenExpiry];
+- (void) setAccessTokenExpiration:(NSDate*) accessTokenExpiration {
+    [[NSUserDefaults standardUserDefaults] setValue:accessTokenExpiration forKey:kFacebookClientStoreTokenExpiry];
 }
 
-+ (void) setAccessPermissions:(NSString*) accessPermissions {
-    [[NSUserDefaults standardUserDefaults] setValue:accessPermissions forKey:FacebookClientStoreAccessPermissions];
+- (void) setAccessPermissions:(NSString*) accessPermissions {
+    [[NSUserDefaults standardUserDefaults] setValue:accessPermissions forKey:kFacebookClientStoreAccessPermissions];
 }
 
-+ (NSString*) currentUserID {
-    NSString *userID = [[NSUserDefaults standardUserDefaults] valueForKey:FacebookClientCurrentUserID];
+- (NSString*) currentUserID {
+    NSString *userID = [[NSUserDefaults standardUserDefaults] valueForKey:kFacebookClientCurrentUserID];
     return userID;
 }
 
-+ (void) setCurrentUserID:(NSString*) userID {
-    [[NSUserDefaults standardUserDefaults] setValue:userID forKey:FacebookClientCurrentUserID];
+- (void) setCurrentUserID:(NSString*) userID {
+    [[NSUserDefaults standardUserDefaults] setValue:userID forKey:kFacebookClientCurrentUserID];
 }
 
-+(void) flushCache {
-    NSString *currentUserId = [self currentUserID];
-    NSString *cacheFileKey = [NSString stringWithFormat:@"%@-tempdir", currentUserId];
-    NSString *cacheDir = [[NSUserDefaults standardUserDefaults] valueForKey:cacheFileKey];
-    BOOL cacheExists = NO;
-    if (cacheDir) {
-        [[NSFileManager defaultManager] fileExistsAtPath:cacheDir isDirectory:&cacheExists];
+
+
+-(NSString*) createSubdirectory:(NSString*) subdir inDirectory:(NSSearchPathDirectory) directory {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(directory, NSUserDomainMask, YES);
+    NSString *currentUserID = [self currentUserID];
+    NSString *cachePath;
+    if (currentUserID) {
+        cachePath = [NSString stringWithFormat:@"%@/%@/%@", [paths objectAtIndex:0], currentUserID, subdir];
+    } else {
+        cachePath = [NSString stringWithFormat:@"%@/%@", [paths objectAtIndex:0], subdir];
     }
-    
-    if (cacheDir &&cacheExists) {
-        [[NSFileManager defaultManager] removeItemAtPath:cacheDir error:nil];
-        [[NSUserDefaults standardUserDefaults] setValue:nil forKey:cacheFileKey];
-        [[NSUserDefaults standardUserDefaults] synchronize];
+    BOOL isDir = NO;
+    NSError *error;
+    if (! [[NSFileManager defaultManager] fileExistsAtPath:cachePath isDirectory:&isDir] && isDir == NO) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:cachePath withIntermediateDirectories:YES attributes:nil error:&error];
     }
+    return cachePath;
 }
 
-+(NSString*) tempCacheDir {
-    NSString *currentUserId = [self currentUserID];
-    NSString *cacheFileKey = [NSString stringWithFormat:@"%@-tempdir", currentUserId];
-    NSString *cacheDir = [[NSUserDefaults standardUserDefaults] valueForKey:cacheFileKey];
-    BOOL cacheExists = NO;
-    if (cacheDir) {
-        [[NSFileManager defaultManager] fileExistsAtPath:cacheDir isDirectory:&cacheExists];
-    }
-    
-    if (!cacheDir || !cacheExists) {
-        cacheDir = [[[[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask] objectAtIndex:0] absoluteString];
-        [[NSUserDefaults standardUserDefaults] setValue:cacheDir forKey:cacheFileKey];
-    }
-    return cacheDir;
+-(NSString*) jsonCachePath {
+    return [self createSubdirectory:@"json" inDirectory:NSCachesDirectory];
 }
 
-+(NSString*) jsonCachePath {
-    //NSString *currentUserId = [self currentUserID];
-    //NSString * jsonCachePath =[[NSFileManager defaultManager] findOrCreateTempDir:[NSString stringWithFormat:@"com.airheart.Swift/%@/json", currentUserId]];
-    NSString * jsonCachePath = [self tempCacheDir];
-    return jsonCachePath;
-}
-
-+(NSString*) photosCachePath {
-    //NSString *currentUserId = [self currentUserID];
-    //NSString * photoCachePath = [[NSFileManager defaultManager] findOrCreateTempDir:[NSString stringWithFormat:@"AirHeart.Swift/%@/photos", currentUserId]];
-    NSString * photoCachePath = [self tempCacheDir];
-    return photoCachePath;
+-(NSString*) photosCachePath {
+    return [self createSubdirectory:@"photos" inDirectory:NSCachesDirectory];
 }
 
 
 #pragma mark - Archiving objects
 
-+(FMDatabase*) openDatabase {
-    FMDatabase *db = [FMDatabase databaseWithPath:@"/tmp/swift.db"];
+-(FMDatabase*) openDatabase {
+    
+    NSString *dbPath = [self createSubdirectory:@"db" inDirectory:NSDocumentDirectory];
+    dbPath = [NSString stringWithFormat:@"%@/facebook_client.sqlite3", dbPath];
+    FMDatabase *db = [FMDatabase databaseWithPath:dbPath];
     if (![db open]) {
+        NSLog(@"!! Unable to open database for FacebookClient at %@", dbPath);
         return nil;
-    }
+    } 
     static BOOL createdDB = NO;
     if (!createdDB) {
         //Create the database
         [db executeUpdate:@"CREATE TABLE IF NOT EXISTS objects ( \"id\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, \"key\" TEXT NOT NULL, \"updated\" integer not null, \"uuid\" TEXT NOT NULL, \"data\" BLOB NOT NULL);"];
         createdDB = YES;
+        NSLog(@"Created FacebookClient db at %@", dbPath);
     }
     return db;
 }
 
-+(FacebookObject*) readObjectWithKey:(NSString*) key {
+-(FacebookObject*) readObjectWithKey:(NSString*) key {
     FMDatabase *db = [self openDatabase];
     FMResultSet *rs = [db executeQuery:@"select data from objects where key =?" withArgumentsInArray:[NSArray arrayWithObjects:key, nil]];
     if (rs.next) {
@@ -1599,7 +1498,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     return nil;
 }
 
-+(void) saveObject:(FacebookObject*) object withKey:(NSString*) key {
+-(void) saveObject:(FacebookObject*) object withKey:(NSString*) key {
     BOOL newObject = NO;
     if (!object.uuid) {
         newObject = YES;
@@ -1616,7 +1515,7 @@ NSString * const FacebookClientMultiQuery = @"FacebookClientMultiQuery";
     }
 }
 
-+(void) flushObjectWithId:(NSString*) objectId {
+-(void) flushObjectWithId:(NSString*) objectId {
     
 }
 

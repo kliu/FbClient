@@ -1,10 +1,9 @@
 PODS:
+  - AFNetworking (1.0RC1)
   - FMDB (2.0)
   - JSONKit (1.4)
-  - JokinglyOperation (1.0.2):
-    - JSONKit (~> 1.4)
 
 DEPENDENCIES:
+  - AFNetworking (~> 1.0RC1)
   - FMDB (= 2.0)
   - JSONKit (~> 1.4)
-  - JokinglyOperation (from `http://github.com/mrjjwright/JokinglyOperation.git')
