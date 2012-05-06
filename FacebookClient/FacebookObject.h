@@ -62,6 +62,7 @@ extern NSString *const kFacebookPrivacyCustom;
 @property (nonatomic, copy) NSString *connectionType;
 
 @property (nonatomic, weak, readonly) NSString *graphPath;
+@property (nonatomic, weak, readonly) NSString *archivePath;
 
 //e.g. a photo could use this to point to it's parent album
 @property (nonatomic, strong) FacebookObject *parent;

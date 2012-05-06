@@ -260,6 +260,13 @@ NSString *const kFacebookPrivacyCustom  =@"CUSTOM";
     return [otherObject.objectID isEqualToString:self.objectID];
 }
 
+-(NSString*) archivePath {
+    if (fql) {
+        return fql;
+    }
+    return self.graphPath;
+}
+
 -(NSString*) graphPath {
     if (fql) {
         return @"fql";

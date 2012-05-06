@@ -171,7 +171,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
         return;
     }
     
-    FacebookObject *archivedObject = [self readObjectWithKey:object.graphPath];
+    FacebookObject *archivedObject = [self readObjectWithKey:object.archivePath];
     if (archivedObject) {
         handler(archivedObject, FacebookLoadTypeInitial, archivedObject.data.count);
     } else {
@@ -223,7 +223,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
             } else {
                 archivedObject.data = newData;                    
             }
-            [self saveObject:archivedObject withKey:object.graphPath];
+            [self saveObject:archivedObject withKey:object.archivePath];
             handler(archivedObject, loadType, parsedResults.count);
         }
     }];
