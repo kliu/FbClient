@@ -1,4 +1,4 @@
 OTHER_LDFLAGS = -ObjC -all_load -framework SystemConfiguration -lsqlite3
 ALWAYS_SEARCH_USER_PATHS = YES
-HEADER_SEARCH_PATHS = "$(PODS_ROOT)/Headers" "$(PODS_ROOT)/Headers/AFNetworking" "$(PODS_ROOT)/Headers/FMDB" "$(PODS_ROOT)/Headers/JSONKit"
+HEADER_SEARCH_PATHS = "$(PODS_ROOT)/Headers" "$(PODS_ROOT)/Headers/AFNetworking" "$(PODS_ROOT)/Headers/FMDB"
 PODS_ROOT = $(SRCROOT)/Pods

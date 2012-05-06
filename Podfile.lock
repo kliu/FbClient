@@ -1,9 +1,7 @@
 PODS:
   - AFNetworking (1.0RC1)
   - FMDB (2.0)
-  - JSONKit (1.4)
 
 DEPENDENCIES:
   - AFNetworking (~> 1.0RC1)
   - FMDB (= 2.0)
-  - JSONKit (~> 1.4)

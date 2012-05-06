@@ -27,18 +27,15 @@ typedef void(^FacebookJSONHandler)(id jsonObject);
 #define kFacebookClientRejectedAccessToken @"kFacebookClientRejectedAccessToken" 
 #define kFacebookClientConnectionError @"kFacebookClientConnectionError"
 #define kFacebookClientAppID @"192822854100507"
-#define kFacebookClientAuthorizeURL @"https://graph.kFacebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&type=user_agent&display=popup"
-#define kFacebookClientAuthorizeWithScopeURL @"https://graph.kFacebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&scope=%@&type=user_agent&display=popup"
-#define kFacebookClientLoginURL @"https://www.kFacebook.com/login.php"
-#define kFacebookClientLoginSuccessURL @"http://www.kFacebook.com/connect/login_success.html"
-#define kFacebookClientUIServerURL @"http://www.kFacebook.com/connect/uiserver.php"
+#define kFacebookClientAuthorizeURL @"https://graph.facebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&type=user_agent&display=popup"
+#define kFacebookClientAuthorizeWithScopeURL @"https://graph.facebook.com/oauth/authorize?client_id=%@&redirect_uri=%@&scope=%@&type=user_agent&display=popup"
+#define kFacebookClientLoginURL @"https://www.facebook.com/login.php"
+#define kFacebookClientLoginSuccessURL @"http://www.facebook.com/connect/login_success.html"
+#define kFacebookClientUIServerURL @"http://www.facebook.com/connect/uiserver.php"
 #define kFacebookClientAccessToken @"access_token="
 #define kFacebookClientExpiresIn =  @"expires_in="
 #define kFacebookClientErrorReason @"error_description="
-#define kFacebookClientGraphApiURLWithToken @"https://graph.kFacebook.com?access_token=%@"
-#define kFacebookClientGraphApiGetURL @"https://graph.kFacebook.com/%@"
-#define kFacebookClientRestApiGetURL @"https://api.kFacebook.com/method/%@"
-#define kFacebookClientGraphApiPostURL @"https://graph.kFacebook.com/%@"
+#define kFacebookGraphURL @"https://graph.facebook.com"
 #define kFacebookClientStoreAccessToken @"kFacebookClientAStoreAccessToken"
 #define kFacebookClientCurrentUserID @"kFacebookClientCurrentUserID"
 #define kFacebookClientStoreTokenExpiry @"kFacebookClientStoreTokenExpiry"
@@ -53,6 +50,9 @@ typedef void(^FacebookJSONHandler)(id jsonObject);
 
 
 @property (nonatomic, readonly) NSMutableDictionary *defaultParams;
+
+
++ (FacebookClient *)sharedClient;
 
 # pragma mark - Core methods
 // You usually don't need to use thes
