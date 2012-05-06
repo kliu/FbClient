@@ -261,7 +261,9 @@ NSString *const kFacebookPrivacyCustom  =@"CUSTOM";
 }
 
 -(NSString*) graphPath {
-    if (fql) return fql;
+    if (fql) {
+        return @"fql";
+    }
     if (!objectID) return nil;
     if (!connectionType) {
         return objectID;

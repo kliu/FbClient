@@ -54,7 +54,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
 
 - (NSArray*) sortFriendsByName:(NSArray*) friends;
 - (NSString*) userIdForURL:(NSString *) url;
--(void) getJSON:(NSString*)url handler:(FacebookJSONHandler) handler;
+-(void) getJSON:(NSString*)url params:(NSMutableDictionary*) params handler:(FacebookJSONHandler) handler;
 -(void) queueBatchOperationForURLs:(NSArray*)urls handler:(FacebookJSONHandler) handler;
 
 @end
@@ -74,7 +74,6 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     dispatch_once(&oncePredicate, ^{
         _sharedClient = [[[self class] alloc] initWithBaseURL:[NSURL URLWithString:kFacebookGraphURL]];
         [_sharedClient registerHTTPOperationClass:[AFJSONRequestOperation class]];
-        _sharedClient.parameterEncoding = AFJSONParameterEncoding;
     });
     
     return _sharedClient;
@@ -85,8 +84,14 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     return [NSMutableDictionary dictionaryWithObjectsAndKeys:[self accessToken], @"access_token", @"U", @"date_format", nil];
 }
 
--(void) getJSON:(NSString *)url handler:(FacebookJSONHandler)handler {
-    [self getPath:url parameters:self.defaultParams success:^(AFHTTPRequestOperation *operation, id responseObject) {
+-(void) getJSON:(NSString *)url  handler:(FacebookJSONHandler)handler {
+    return [self getJSON:url params:self.defaultParams handler:handler];
+}
+
+-(void) getJSON:(NSString *)url params:(NSDictionary*) params handler:(FacebookJSONHandler)handler {
+    NSAssert(url, @"Blank url");
+    NSDictionary *parameters = params ? params : self.defaultParams;
+    [self getPath:url parameters:parameters success:^(AFHTTPRequestOperation *operation, id responseObject) {
         
         if (self.jsonParseHandler) {
             responseObject = self.jsonParseHandler(responseObject);
@@ -97,6 +102,17 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     } failure:self.defaultFailureHandler];
 }
 
+-(NSString*) jsonStringForObject:(id) obj {
+    if (obj) {
+        return [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:obj options:0 error:0] encoding:NSUTF8StringEncoding];
+    }
+    return  nil;
+}
+
+-(id) objectForJSONString:(NSString*) obj {
+    return [NSJSONSerialization JSONObjectWithData:[obj dataUsingEncoding:NSUTF8StringEncoding] options:0 error:0];
+}
+
 // See: https://developers.facebook.com/docs/reference/api/batch/
 - (void) queueBatchOperationForURLs:(NSArray*)urls handler:(FacebookJSONHandler) handler{
     
@@ -105,10 +121,9 @@ typedef id(^FacebookJSONParseHandler)(id obj);
         [batchArray addObject:[NSDictionary dictionaryWithObjectsAndKeys:@"GET", @"method", url, @"relative_url", nil]];
     }
     
-    //These will be converted into json
-    NSDictionary *params = [NSDictionary dictionaryWithObject:batchArray forKey:@"batch"];
-    NSString *path = [self pathWithToken:@"/"];
-    [self postPath:path parameters:params success:^(AFHTTPRequestOperation *operation, id responseObject) {
+    NSDictionary *params = self.defaultParams;
+    [params setValue:[self jsonStringForObject:batchArray] forKey:@"batch"];
+    [self postPath:@"/" parameters:params success:^(AFHTTPRequestOperation *operation, id responseObject) {
         if (handler) {
             handler(responseObject);
         }
@@ -178,16 +193,21 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     
     
     NSString *query = object.graphPath;
+    NSMutableDictionary *params = self.defaultParams;
     if (archivedObject.updatedAt) {
         NSTimeInterval updatedTime = [archivedObject.updatedAt timeIntervalSince1970];
         if (object.fql) {
-            query = [self streamQueryForUser:object.objectID andType:object.type limit:100 updatedTime:updatedTime];
+            [params setObject:[self streamQueryForUser:object.objectID andType:object.type limit:100 updatedTime:updatedTime] forKey:@"q"];
         } else {
-            query = [NSString stringWithFormat:@"%@?since=%.0f&date_format=U", query, updatedTime];            
+            [params setObject:[NSNumber numberWithInteger:updatedTime] forKey:@"since"];
         }
+    } else if (object.fql) {
+        [params setObject:object.fql forKey:@"q"];
     }
     
-    [self getJSON:query handler:^(id jsonObj) {
+    
+    
+    [self getJSON:query params:params handler:^(id jsonObj) {
         NSArray *parsedResults;
         if (object.fql) {
             parsedResults = [self parseNewsFeedResponseIntoFacebookObjects:jsonObj expectedType:object.type];
@@ -257,21 +277,21 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     [self queueBatchOperationForURLs:urls handler:^(id jsonResult) {
         if (jsonResult && [jsonResult isKindOfClass:[NSArray class]]) {
             
-            NSDictionary *profileInfo = [[jsonResult objectAtIndex:0] valueForKey:@"body"];
+            NSDictionary *profileInfo = [self objectForJSONString:[[jsonResult objectAtIndex:0] valueForKey:@"body"]];
             FacebookObject *objectToLoad = [self parseJSONDictIntoFacebookObject:profileInfo expectedType:user.type];
             objectToLoad.originalObject = jsonResult;
             objectToLoad.uuid = object.uuid;
             
-            NSDictionary *albumsJSON = [[jsonResult objectAtIndex:1] valueForKey:@"body"];
+            NSDictionary *albumsJSON = [self objectForJSONString:[[jsonResult objectAtIndex:1] valueForKey:@"body"]];
             NSArray *albums = [albumsJSON valueForKey:@"data"];
             objectToLoad.albums = [self parseArrayResponseIntoFacebookObjects:albums expectedType:FacebookObjectTypeAlbum];
             
-            NSDictionary *likesJSON = [[jsonResult objectAtIndex:2] valueForKey:@"body"];
+            NSDictionary *likesJSON = [self objectForJSONString:[[jsonResult objectAtIndex:2] valueForKey:@"body"]];
             NSArray *likes = [likesJSON valueForKey:@"data"];
             objectToLoad.likes = [self parseArrayResponseIntoFacebookObjects:likes  expectedType:FacebookObjectTypePage];
             
             
-            NSDictionary *groupsJSON = [[jsonResult objectAtIndex:3] valueForKey:@"body"];
+            NSDictionary *groupsJSON = [self objectForJSONString:[[jsonResult objectAtIndex:3] valueForKey:@"body"]];
             NSArray *groups = [groupsJSON valueForKey:@"data"];
             objectToLoad.groups = [self parseArrayResponseIntoFacebookObjects:groups expectedType:FacebookObjectTypeGroup];
             
@@ -279,11 +299,11 @@ typedef id(^FacebookJSONParseHandler)(id obj);
             if ([objectToLoad.objectID isEqualToString:[self currentUserID]] || [objectToLoad.objectID isEqualToString:@"me"]) {
                 // A complete list of a user's friend can only be retrieved for the current user according to:
                 // http://stackoverflow.com/questions/3818588/getting-friends-of-friends-in-fb-graph-api
-                NSDictionary *friendsJSON = [[jsonResult objectAtIndex:4] valueForKey:@"body"];
+                NSDictionary *friendsJSON = [self objectForJSONString:[[jsonResult objectAtIndex:4] valueForKey:@"body"]];
                 NSArray *friends = [friendsJSON valueForKey:@"data"];
                 objectToLoad.friends = [self parseArrayResponseIntoFacebookObjects:friends expectedType:FacebookObjectTypeUser];
                 
-                NSDictionary *friendlistsJSON = [[jsonResult objectAtIndex:5] valueForKey:@"body"];
+                NSDictionary *friendlistsJSON = [self objectForJSONString:[[jsonResult objectAtIndex:5] valueForKey:@"body"]];
                 NSArray *friendlists = [friendlistsJSON valueForKey:@"data"];
                 objectToLoad.friendlists = [self parseArrayResponseIntoFacebookObjects:friendlists expectedType:FacebookObjectTypeGroup];
                 
@@ -438,7 +458,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
         if (firstPos <= 0) {
             firstPos = [link rangeOfString:@"set=at."].location - 7;
         }
-        if (firstPos >0 ) {
+        if (firstPos >0  && firstPos < 200 ) {
             NSArray *restOfString = [[link substringFromIndex:firstPos] componentsSeparatedByString:@"."];
             if (!restOfString || !restOfString.count) {
                 restOfString = [[link substringFromIndex:firstPos] componentsSeparatedByString:@"&"];
@@ -1082,10 +1102,6 @@ typedef id(^FacebookJSONParseHandler)(id obj);
 #pragma mark URL builders
 
 
-- (NSString*) buildMultiQuery:(NSDictionary*) queryDict {
-    NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:queryDict options:NSJSONWritingPrettyPrinted error:0] encoding:NSUTF8StringEncoding];
-    return [NSString stringWithFormat:@"fql?q=%@", json];
-}
 
 -(NSString*) streamSQLforFilter:(NSString*) whereClause limit:(NSInteger) limit {
     return [NSString stringWithFormat:@"SELECT created_time, updated_time, attachment, post_id, source_id, actor_id, target_id, message, likes, privacy, tagged_ids, message_tags, description, description_tags, type FROM stream WHERE %@  limit %ld", whereClause, limit];
@@ -1158,7 +1174,8 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     [queriesDict setValue:[self streamSQLforFilter:filterString limit:limit] forKey:@"streamQuery"];
     [queriesDict setValue:[self profileQueryReferencingQueryWithName:@"streamQuery"] forKey:@"profileQuery"];
     [queriesDict setValue:[self commentsQueryReferencingQueryWithName:@"streamQuery"] forKey:@"commentsQuery"];
-    return [self buildMultiQuery:queriesDict];
+    NSString* jsonString = [self jsonStringForObject:queriesDict];
+    return jsonString;
 }
 
 -(NSString*) newsFeedQueryForUser:(NSString*) userID limit:(NSInteger) limit {
@@ -1340,7 +1357,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
 }
 
 
-- (FacebookJSONParseHandler) jsonHandler {
+- (FacebookJSONParseHandler) jsonParseHandler {
     static FacebookJSONParseHandler jsonHandler;
     jsonHandler = ^id(id obj) {
         if (obj && [obj isKindOfClass:[NSDictionary class]]) {
@@ -1361,7 +1378,7 @@ typedef id(^FacebookJSONParseHandler)(id obj);
         
         return nil;
     };
-    return jsonHandler;
+    return [jsonHandler copy];
 }
 
 
@@ -1371,7 +1388,11 @@ typedef id(^FacebookJSONParseHandler)(id obj);
     handler = ^void(AFHTTPRequestOperation *operation, NSError *error) {
         if ([error.description containsString:@"Invalid OAuth"]) {
             [[NSNotificationCenter defaultCenter] postNotification:[NSNotification notificationWithName:kFacebookClientRejectedAccessToken object:nil]];
-            NSLog(@"!!!FacebookClient error %@", error);
+        }
+        NSLog(@"!!!FacebookClient error %@ for url: %@", error, operation.request.URL.absoluteString);
+        if ([operation.request.HTTPMethod isEqualToString:@"POST"]) {
+            NSString *body = [[NSString alloc] initWithData:operation.request.HTTPBody encoding:NSUTF8StringEncoding];
+            NSLog(@"Body is:%@", body);
         }
     };
     return handler;
