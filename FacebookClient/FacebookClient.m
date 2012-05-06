@@ -50,8 +50,8 @@ typedef id(^FacebookJSONParseHandler)(id obj);
 
 @interface FacebookClient()
 
-@property (nonatomic, readonly, weak) AFFailureHandler defaultFailureHandler;
-@property (nonatomic, readonly, weak) FacebookJSONParseHandler jsonParseHandler;
+@property (nonatomic, readonly, copy) AFFailureHandler defaultFailureHandler;
+@property (nonatomic, readonly, copy) FacebookJSONParseHandler jsonParseHandler;
 
 - (NSArray*) sortFriendsByName:(NSArray*) friends;
 - (NSString*) userIdForURL:(NSString *) url;
